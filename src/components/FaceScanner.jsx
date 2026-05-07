@@ -1,5 +1,5 @@
-import React, { useRef, useState, useEffect } from 'react';
-import { Camera, Scan, ShieldCheck, UserCheck, AlertCircle, User } from 'lucide-react';
+import React, { useRef, useState, useEffect, useCallback } from 'react';
+import { Camera, Scan, ShieldCheck, UserCheck, AlertCircle, User, XCircle } from 'lucide-react';
 
 const FaceScanner = () => {
   const videoRef = useRef(null);
@@ -9,16 +9,25 @@ const FaceScanner = () => {
   const [stream, setStream] = useState(null);
   const [isSimulation, setIsSimulation] = useState(false);
 
-  useEffect(() => {
-    return () => stopCamera();
-  }, [stream]);
+  // Use a ref to track if identification is in progress to avoid double-triggers
+  const isProcessing = useRef(false);
 
-  const startScanning = async () => {
+  // Initialize camera once when component mounts or when isScanning changes
+  useEffect(() => {
+    if (isScanning && !stream) {
+      initCamera();
+    }
+    // Cleanup: Only stop camera when component unmounts or identification is complete
+    return () => {
+      if (!isScanning && stream) {
+        stopCamera();
+      }
+    };
+  }, [isScanning]);
+
+  const initCamera = async () => {
     try {
       setError(null);
-      setIdentifiedPerson(null);
-      setIsScanning(true);
-      
       const mediaStream = await navigator.mediaDevices.getUserMedia({ 
         video: { facingMode: 'user' } 
       });
@@ -27,20 +36,9 @@ const FaceScanner = () => {
       }
       setStream(mediaStream);
       setIsSimulation(false);
-
-      // Simulate AI Scanning Logic
-      setTimeout(() => {
-        performIdentification();
-      }, 3000);
-
     } catch (err) {
       console.warn("Camera hardware not found. Switching to Simulated Scanner.", err);
       setIsSimulation(true);
-      
-      // Still start the "Scanning" process but using simulation UI
-      setTimeout(() => {
-        performIdentification();
-      }, 3000);
     }
   };
 
@@ -49,42 +47,85 @@ const FaceScanner = () => {
       stream.getTracks().forEach(track => track.stop());
       setStream(null);
     }
-    setIsScanning(false);
+  };
+
+  const handleStartScan = () => {
+    setIdentifiedPerson(null);
+    setError(null);
+    setIsScanning(true);
+    isProcessing.current = true;
+
+    // Wait 3 seconds then process identification
+    setTimeout(() => {
+      if (isProcessing.current) {
+        performIdentification();
+      }
+    }, 3000);
   };
 
   const performIdentification = () => {
     const saved = localStorage.getItem('relatives');
     const relatives = saved ? JSON.parse(saved) : [];
     
-    if (relatives.length === 0) {
-      setError("No registered family members found in database.");
-      stopCamera();
-      return;
+    // Logic for "Unknown" vs "Identified"
+    // For demo: if no relatives, or 20% chance of unknown
+    const isUnknown = relatives.length === 0 || Math.random() < 0.2;
+    
+    let match = null;
+    let eventType = 'identification_unknown';
+    let personName = 'Unknown Person';
+
+    if (!isUnknown) {
+      match = relatives[Math.floor(Math.random() * relatives.length)];
+      setIdentifiedPerson(match);
+      eventType = 'identification_match';
+      personName = match.name;
+    } else {
+      setError("Unknown person detected. Alert sent to caretaker.");
+      eventType = 'identification_unknown';
     }
 
-    // Pick the most recently registered relative for the demo
-    const match = relatives[relatives.length - 1]; 
-    setIdentifiedPerson(match);
+    // Send Alert to Caretaker via LocalStorage
+    const alertData = {
+      id: Date.now(),
+      type: eventType,
+      name: personName,
+      time: new Date().toLocaleTimeString(),
+      photo: match ? match.photo : null
+    };
+    
+    localStorage.setItem('last_identification_alert', JSON.stringify(alertData));
+    
+    isProcessing.current = false;
     setIsScanning(false);
     stopCamera();
   };
 
+  const reset = () => {
+    setIdentifiedPerson(null);
+    setError(null);
+    setIsScanning(false);
+    isProcessing.current = false;
+  };
+
   return (
     <div className="face-scanner-container" style={{ width: '100%', maxWidth: '800px', margin: '0 auto' }}>
-      {!identifiedPerson ? (
+      {!identifiedPerson && !error ? (
         <div className="patient-card" style={{ padding: '3rem' }}>
           <div style={{ background: 'rgba(99, 102, 241, 0.1)', padding: '1.5rem', borderRadius: '50%', marginBottom: '1.5rem', display: 'inline-block' }}>
             <Scan size={64} color="var(--primary)" />
           </div>
           <h2 style={{ fontSize: '2.5rem', marginBottom: '1rem' }}>Who is here?</h2>
-          <p style={{ fontSize: '1.2rem', opacity: 0.7, marginBottom: '2rem' }}>
-            Stand in front of the camera and I will help you remember who they are.
-          </p>
-
+          
           {!isScanning ? (
-            <button className="patient-btn btn-primary" onClick={startScanning} style={{ maxWidth: '400px' }}>
-              <Camera size={28} /> Start Scanning
-            </button>
+            <>
+              <p style={{ fontSize: '1.2rem', opacity: 0.7, marginBottom: '2rem' }}>
+                Stand in front of the camera and I will help you remember who they are.
+              </p>
+              <button className="patient-btn btn-primary" onClick={handleStartScan} style={{ maxWidth: '400px' }}>
+                <Camera size={28} /> Start Scanning
+              </button>
+            </>
           ) : (
             <div className="camera-container" style={{ margin: '0 auto', maxWidth: '600px' }}>
               {!isSimulation ? (
@@ -99,20 +140,13 @@ const FaceScanner = () => {
               )}
               <div className="scanner-overlay" />
               <div className="scan-line" />
-              <div className="scan-pulse" />
               <div style={{ position: 'absolute', bottom: '1rem', left: '0', right: '0', textAlign: 'center', color: 'white', fontWeight: '700', textShadow: '0 2px 4px rgba(0,0,0,0.5)', zIndex: 20 }}>
-                {isSimulation ? "MATCHING AGAINST DATABASE..." : "ANALYZING BIOMETRICS..."}
+                SCANNING BIOMETRICS...
               </div>
             </div>
           )}
-
-          {error && (
-            <div style={{ marginTop: '2rem', color: 'var(--danger)', display: 'flex', alignItems: 'center', gap: '0.5rem', justifyContent: 'center' }}>
-              <AlertCircle size={20} /> {error}
-            </div>
-          )}
         </div>
-      ) : (
+      ) : identifiedPerson ? (
         <div className="id-result animate-fade-in">
           <div className="id-photo-frame">
             <img src={identifiedPerson.photo} alt={identifiedPerson.name} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
@@ -126,19 +160,23 @@ const FaceScanner = () => {
             <p style={{ fontSize: '1.5rem', color: 'var(--primary)', fontWeight: '600' }}>
               This is your {identifiedPerson.relation}
             </p>
-            <div style={{ marginTop: '1.5rem', padding: '1rem', background: '#f0fdf4', borderRadius: '1rem', border: '1px solid #dcfce7' }}>
-              <p style={{ fontSize: '1.1rem', fontStyle: 'italic' }}>
-                "They love you very much and are here to help."
-              </p>
-            </div>
-            <button 
-              className="patient-btn btn-primary" 
-              onClick={() => setIdentifiedPerson(null)} 
-              style={{ marginTop: '2rem', padding: '1rem', fontSize: '1.1rem', background: '#94a3b8' }}
-            >
+            <button className="patient-btn btn-primary" onClick={reset} style={{ marginTop: '2rem', padding: '1rem', background: '#94a3b8' }}>
               Scan Someone Else
             </button>
           </div>
+        </div>
+      ) : (
+        <div className="patient-card animate-fade-in" style={{ padding: '3rem', border: '2px solid var(--danger)' }}>
+          <div style={{ background: 'rgba(239, 68, 68, 0.1)', padding: '1.5rem', borderRadius: '50%', marginBottom: '1.5rem', display: 'inline-block' }}>
+            <XCircle size={64} color="var(--danger)" />
+          </div>
+          <h2 style={{ fontSize: '2.5rem', marginBottom: '1rem', color: 'var(--danger)' }}>Unknown Person</h2>
+          <p style={{ fontSize: '1.5rem', opacity: 0.8, marginBottom: '2rem' }}>
+            I don't recognize this person. I have alerted your caretaker for safety.
+          </p>
+          <button className="patient-btn btn-primary" onClick={reset} style={{ maxWidth: '400px' }}>
+            Try Again
+          </button>
         </div>
       )}
     </div>
